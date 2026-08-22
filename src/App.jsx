@@ -1,11 +1,12 @@
 import { useState } from "react";
 
 import "./App.css";
+import { SafetyBanner } from "./components/SafetyBanner";
 
 function App() {
   return (
     <div>
-      <h1>NHS triage app</h1>
+      <SafetyBanner />
     </div>
   );
 }
