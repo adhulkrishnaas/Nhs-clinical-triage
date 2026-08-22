@@ -5,9 +5,82 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  Sparkles,
 } from "lucide-react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db, auth } from "../services/firebase";
+
+// Helper function to handle OpenAI Triage Evaluation
+const getAITriageAssessment = async (symptoms, ageCategory, duration) => {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+
+  if (!apiKey) {
+    console.warn("OpenAI API key missing. Defaulting to ROUTINE triage.");
+    return {
+      urgency: "ROUTINE",
+      aiAssessment: "API key missing. Defaulting to routine manual review.",
+    };
+  }
+
+  const systemPrompt = `
+You are an expert NHS clinical triage AI. Evaluate the following patient symptom report.
+Respond ONLY with a valid JSON object matching this exact schema:
+{
+  "urgency": "EMERGENCY" | "URGENT" | "ROUTINE",
+  "aiAssessment": "A concise 1-2 sentence clinical summary explaining the evaluation."
+}
+
+Urgency Rules:
+- "EMERGENCY": Severe/life-threatening symptoms like chest pain, severe breathing difficulty, stroke signs, or sudden loss of consciousness.
+- "URGENT": Acute conditions requiring rapid attention like high persistent fever, severe pain, active bleeding, or suspected fracture.
+- "ROUTINE": Mild cold/flu symptoms, minor rashes, localized low-grade pain, or non-urgent general queries.
+  `;
+
+  const userPrompt = `
+Patient Age Bracket: ${ageCategory}
+Symptom Duration: ${duration}
+Reported Symptoms: "${symptoms}"
+  `;
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI HTTP Error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const result = JSON.parse(data.choices[0].message.content);
+
+    return {
+      urgency: result.urgency || "ROUTINE",
+      aiAssessment: result.aiAssessment || "AI triage processed successfully.",
+    };
+  } catch (err) {
+    console.error("AI Triage Error:", err);
+    // Fail-safe: Default to URGENT if API call fails so clinicians inspect immediately
+    return {
+      urgency: "URGENT",
+      aiAssessment:
+        "AI evaluation unavailable. Priority elevated to URGENT for manual review.",
+    };
+  }
+};
 
 export const SymptomWizard = () => {
   const [currentStep, setCurrentStep] = useState(1);
@@ -40,7 +113,14 @@ export const SymptomWizard = () => {
     setError(null);
 
     try {
-      // Save assessment to the triage_queue collection
+      // 1. Run OpenAI dynamic triage assessment
+      const aiResult = await getAITriageAssessment(
+        formData.symptoms,
+        formData.ageCategory,
+        formData.duration,
+      );
+
+      // 2. Save assessment + AI results directly to Firestore
       await addDoc(collection(db, "triage_queue"), {
         patientUid: auth.currentUser?.uid || "anonymous",
         patientName:
@@ -54,9 +134,11 @@ export const SymptomWizard = () => {
         symptomDetails: formData.symptoms,
         ageCategory: formData.ageCategory,
         duration: formData.duration,
-        urgency: "Medium", // Default baseline urgency prior to AI assessment
-        aiAssessment:
-          "Patient reported acute symptoms during wizard assessment. Pending clinical review.",
+
+        // AI Dynamic Values
+        urgency: aiResult.urgency,
+        aiAssessment: aiResult.aiAssessment,
+
         status: "pending",
         createdAt: new Date().toISOString(),
         timestamp: serverTimestamp(),
@@ -271,7 +353,8 @@ export const SymptomWizard = () => {
               {submitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Submitting to Queue...</span>
+                  <Sparkles className="w-4 h-4 animate-pulse text-yellow-300" />
+                  <span>AI Triaging & Submitting...</span>
                 </>
               ) : (
                 <>
