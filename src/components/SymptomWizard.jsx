@@ -8,7 +8,8 @@ import {
   PhoneCall,
 } from "lucide-react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db, auth } from "../services/firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { db, auth, app } from "../services/firebase";
 
 /* ------------------------------------------------------------------ */
 /*  SAFETY NET — hard-coded red flags, independent of the AI call.     */
@@ -39,75 +40,22 @@ const checkRedFlags = (text) => {
 };
 
 /* ------------------------------------------------------------------ */
-/*  AI assessment — should be moved server-side (Cloud Function).      */
-/*  Calling OpenAI directly from the browser exposes your API key to   */
-/*  anyone who opens devtools. Kept here only so the demo still runs;  */
-/*  see comment at call site below.                                    */
+/*  AI assessment now runs server-side via a Cloud Function            */
+/*  (functions/getTriageAssessment). The OpenAI key never reaches      */
+/*  the browser, and the red-flag check is re-verified server-side     */
+/*  so it can't be bypassed by a tampered client request.               */
 /* ------------------------------------------------------------------ */
+const functions = getFunctions(app);
+const callTriageAssessment = httpsCallable(functions, "getTriageAssessment");
+
 const getAITriageAssessment = async (symptoms, ageCategory, duration) => {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-
-  if (!apiKey) {
-    console.warn(
-      "OpenAI API key missing. Defaulting to URGENT for manual review.",
-    );
-    return {
-      urgency: "URGENT",
-      aiAssessment:
-        "AI evaluation unavailable. Flagged for manual clinical review.",
-    };
-  }
-
-  const systemPrompt = `
-You are a clinical triage support tool. You do NOT diagnose. You assess reported
-symptoms and assign a priority band so a human clinician reviews the case in the
-right order. Respond ONLY with valid JSON matching:
-{
-  "urgency": "EMERGENCY" | "URGENT" | "ROUTINE",
-  "aiAssessment": "A concise 1-2 sentence, non-diagnostic summary for the reviewing clinician."
-}
-
-Urgency rules:
-- EMERGENCY: any life-threatening presentation (chest pain, breathing difficulty, stroke signs, unconsciousness, severe bleeding, suicidal ideation).
-- URGENT: acute conditions needing rapid review (high persistent fever, severe pain, suspected fracture, active but non-severe bleeding).
-- ROUTINE: mild, self-limiting symptoms.
-
-If uncertain, err toward the higher urgency band.
-  `;
-
-  const userPrompt = `
-Patient age bracket: ${ageCategory}
-Symptom duration: ${duration}
-Reported symptoms: "${symptoms}"
-  `;
-
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
+    const result = await callTriageAssessment({
+      symptoms,
+      ageCategory,
+      duration,
     });
-
-    if (!response.ok) throw new Error(`OpenAI HTTP Error: ${response.status}`);
-
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
-
-    return {
-      urgency: result.urgency || "URGENT",
-      aiAssessment: result.aiAssessment || "AI triage processed.",
-    };
+    return result.data; // { urgency, aiAssessment, redFlagTriggered }
   } catch (err) {
     console.error("AI Triage Error:", err);
     // Fail-safe: default to URGENT (never ROUTINE) if the call fails
@@ -115,16 +63,9 @@ Reported symptoms: "${symptoms}"
       urgency: "URGENT",
       aiAssessment:
         "AI evaluation unavailable. Priority elevated to URGENT for manual review.",
+      redFlagTriggered: false,
     };
   }
-};
-
-const URGENCY_LEVELS = { EMERGENCY: 3, URGENT: 2, ROUTINE: 1 };
-
-/** Combine keyword red-flag detection with the AI's own band, always taking the higher (more urgent) of the two. */
-const resolveFinalUrgency = (aiUrgency, redFlagHit) => {
-  if (redFlagHit) return "EMERGENCY";
-  return aiUrgency;
 };
 
 export const SymptomWizard = () => {
@@ -134,6 +75,10 @@ export const SymptomWizard = () => {
   const [error, setError] = useState(null);
   const [consentGiven, setConsentGiven] = useState(false);
   const [emergencyDetected, setEmergencyDetected] = useState(false);
+  // If the patient confirms a red-flag match was a false positive (e.g. "family
+  // history of X"), they can dismiss the overlay and continue. Re-arms if they
+  // keep editing after dismissing, so a genuine later red flag still interrupts.
+  const [emergencyDismissed, setEmergencyDismissed] = useState(false);
 
   const [formData, setFormData] = useState({
     ageCategory: "Adult (18 to 64)",
@@ -145,9 +90,10 @@ export const SymptomWizard = () => {
   const emergencyBannerRef = useRef(null);
 
   // Re-check red flags live as the patient types, not just on submit —
-  // an emergency banner shown late is an emergency banner shown too late.
+  // an emergency overlay shown late is an emergency overlay shown too late.
   useEffect(() => {
     setEmergencyDetected(checkRedFlags(formData.symptoms));
+    setEmergencyDismissed(false); // any further edit re-arms the check
   }, [formData.symptoms]);
 
   useEffect(() => {
@@ -182,19 +128,17 @@ export const SymptomWizard = () => {
     setError(null);
 
     try {
-      const redFlagHit = checkRedFlags(formData.symptoms);
-
-      // NOTE ON PRODUCTION USE: this call currently goes straight from the
-      // browser to OpenAI, which exposes your API key. Route this through a
-      // Firebase Cloud Function (or similar backend) that holds the key
-      // server-side and forwards only the minimum needed fields.
+      // aiResult.urgency already has the red flag check applied server-side —
+      // this is the source of truth. The client-side checkRedFlags/emergencyDetected
+      // above is only for showing the banner instantly as the patient types,
+      // it never determines what actually gets stored.
       const aiResult = await getAITriageAssessment(
         formData.symptoms,
         formData.ageCategory,
         formData.duration,
       );
 
-      const finalUrgency = resolveFinalUrgency(aiResult.urgency, redFlagHit);
+      const finalUrgency = aiResult.urgency;
 
       await addDoc(collection(db, "triage_queue"), {
         patientUid: auth.currentUser?.uid || "anonymous",
@@ -212,7 +156,7 @@ export const SymptomWizard = () => {
 
         urgency: finalUrgency,
         aiAssessment: aiResult.aiAssessment,
-        redFlagTriggered: redFlagHit,
+        redFlagTriggered: aiResult.redFlagTriggered,
 
         status: finalUrgency === "EMERGENCY" ? "immediate_review" : "pending",
         createdAt: new Date().toISOString(),
@@ -243,36 +187,56 @@ export const SymptomWizard = () => {
     });
   };
 
-  /* ---------------------- Emergency banner (always visible if triggered) ---------------------- */
-  const EmergencyBanner = () =>
-    emergencyDetected ? (
+  /* ---------------------- Emergency overlay (full-screen, blocking) ---------------------- */
+  const showEmergencyOverlay = emergencyDetected && !emergencyDismissed;
+
+  const EmergencyOverlay = () =>
+    showEmergencyOverlay ? (
       <div
         ref={emergencyBannerRef}
         tabIndex={-1}
-        role="alert"
-        className="mb-6 border-l-[6px] border-[#d5281b] bg-[#fdf2f2] p-4"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="emergency-overlay-title"
+        className="fixed inset-0 bg-nhs-emergency-red z-50 flex items-center justify-center p-4"
       >
-        <div className="flex gap-3">
-          <PhoneCall className="w-6 h-6 text-[#d5281b] flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="font-bold text-[#d5281b] text-base mb-1">
+        <div className="bg-nhs-white max-w-md w-full p-6 space-y-4 border-t-[6px] border-nhs-emergency-red">
+          <div className="flex gap-3">
+            <PhoneCall className="w-8 h-8 text-nhs-emergency-red flex-shrink-0" />
+            <h2
+              id="emergency-overlay-title"
+              className="font-bold text-nhs-emergency-red text-lg"
+            >
               This sounds like it could be a medical emergency
-            </p>
-            <p className="text-sm text-[#3d3d3d] mb-2">
-              Based on what you've described, do not wait for this form to be
-              reviewed.
-            </p>
-            <ul className="text-sm text-[#3d3d3d] list-disc list-inside space-y-1">
-              <li>
-                Call <strong>999</strong> now, or go to your nearest A&amp;E, if
-                this is life-threatening.
-              </li>
-              <li>
-                Call <strong>111</strong> or visit 111.nhs.uk if you're unsure
-                and need urgent advice.
-              </li>
-            </ul>
+            </h2>
           </div>
+
+          <p className="text-sm text-nhs-black">
+            Based on what you've described, don't wait for this form to be
+            reviewed.
+          </p>
+
+          <div className="space-y-2">
+            <a
+              href="tel:999"
+              className="block w-full text-center py-3 bg-nhs-emergency-red text-nhs-white font-bold hover:brightness-90"
+            >
+              Call 999 now
+            </a>
+            <a
+              href="tel:111"
+              className="block w-full text-center py-3 border-2 border-nhs-black text-nhs-black font-bold hover:bg-nhs-grey-light"
+            >
+              Call 111 for urgent advice
+            </a>
+          </div>
+
+          <button
+            onClick={() => setEmergencyDismissed(true)}
+            className="w-full text-center text-xs text-nhs-grey-dark underline pt-2"
+          >
+            This isn't an emergency, let me continue with the form
+          </button>
         </div>
       </div>
     ) : null;
@@ -280,23 +244,23 @@ export const SymptomWizard = () => {
   /* ---------------------- Confirmation screen ---------------------- */
   if (submitted) {
     return (
-      <div className="bg-white border border-[#d8dde0] max-w-2xl mx-auto my-8">
-        <div className="border-t-[6px] border-[#007f3b] p-8 text-center space-y-4">
-          <CheckCircle2 className="w-14 h-14 text-[#007f3b] mx-auto" />
-          <h2 className="text-2xl font-bold text-[#212b32]">
+      <div className="bg-nhs-white border border-nhs-grey-mid max-w-2xl mx-auto my-8">
+        <div className="border-t-[6px] border-nhs-urgency-routine p-8 text-center space-y-4">
+          <CheckCircle2 className="w-14 h-14 text-nhs-urgency-routine mx-auto" />
+          <h2 className="text-2xl font-bold text-nhs-black">
             Assessment submitted
           </h2>
-          <p className="text-sm text-[#4c6272] max-w-md mx-auto">
+          <p className="text-sm text-nhs-grey-dark max-w-md mx-auto">
             Your symptom report has been added to the clinical review queue. A
             member of the clinical team will review your case and be in touch.
           </p>
-          <p className="text-xs text-[#4c6272] max-w-md mx-auto">
+          <p className="text-xs text-nhs-grey-dark max-w-md mx-auto">
             If your symptoms get worse while you wait, call 111, or 999 in an
             emergency.
           </p>
           <button
             onClick={resetForm}
-            className="mt-2 px-6 py-2.5 bg-[#005eb8] text-white font-bold text-sm hover:bg-[#003087] focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+            className="mt-2 px-6 py-2.5 bg-nhs-blue text-nhs-white font-bold text-sm hover:bg-nhs-dark-blue"
           >
             Submit another assessment
           </button>
@@ -313,25 +277,24 @@ export const SymptomWizard = () => {
   }[currentStep];
 
   return (
-    <div className="bg-white border border-[#d8dde0] max-w-2xl mx-auto my-8 border-t-[6px] border-t-[#005eb8]">
+    <div className="bg-nhs-white border border-nhs-grey-mid max-w-2xl mx-auto my-8 border-t-[6px] border-t-nhs-blue">
+      <EmergencyOverlay />
       <div className="p-6 md:p-8">
         {/* Non-emergency but clinical-safety disclaimer, always visible */}
-        <div className="mb-6 bg-[#f0f4f5] border border-[#d8dde0] p-3 text-xs text-[#4c6272]">
+        <div className="mb-6 bg-nhs-grey-light border border-nhs-grey-mid p-3 text-xs text-nhs-grey-dark">
           This tool helps prioritise your case for clinician review. It does not
           provide a diagnosis. In a medical emergency, always call{" "}
           <strong>999</strong>.
         </div>
 
-        <EmergencyBanner />
-
         {/* Step indicator */}
-        <div className="mb-6 pb-4 border-b border-[#d8dde0]">
-          <p className="text-xs font-bold uppercase tracking-wide text-[#4c6272] mb-2">
+        <div className="mb-6 pb-4 border-b border-nhs-grey-mid">
+          <p className="text-xs font-bold uppercase tracking-wide text-nhs-grey-dark mb-2">
             Step {currentStep} of 3: {stepLabel}
           </p>
-          <div className="w-full bg-[#d8dde0] h-1.5">
+          <div className="w-full bg-nhs-grey-mid h-1.5">
             <div
-              className="bg-[#005eb8] h-full transition-all duration-300"
+              className="bg-nhs-blue h-full transition-all duration-300"
               style={{ width: `${(currentStep / 3) * 100}%` }}
             />
           </div>
@@ -343,29 +306,29 @@ export const SymptomWizard = () => {
             ref={errorSummaryRef}
             tabIndex={-1}
             role="alert"
-            className="border-2 border-[#d5281b] p-4 mb-6"
+            className="border-2 border-nhs-emergency-red p-4 mb-6"
           >
             <div className="flex items-center gap-2 mb-1">
-              <AlertTriangle className="w-4 h-4 text-[#d5281b]" />
-              <span className="font-bold text-[#d5281b] text-sm">
+              <AlertTriangle className="w-4 h-4 text-nhs-emergency-red" />
+              <span className="font-bold text-nhs-emergency-red text-sm">
                 There is a problem
               </span>
             </div>
-            <p className="text-sm text-[#212b32]">{error}</p>
+            <p className="text-sm text-nhs-black">{error}</p>
           </div>
         )}
 
         {/* Step 1 */}
         {currentStep === 1 && (
           <fieldset className="space-y-6">
-            <legend className="text-xl font-bold text-[#212b32] mb-2">
+            <legend className="text-xl font-bold text-nhs-black mb-2">
               Patient information
             </legend>
 
             <div>
               <label
                 htmlFor="ageCategory"
-                className="block text-sm font-bold text-[#212b32] mb-1"
+                className="block text-sm font-bold text-nhs-black mb-1"
               >
                 Age bracket
               </label>
@@ -373,7 +336,7 @@ export const SymptomWizard = () => {
                 id="ageCategory"
                 value={formData.ageCategory}
                 onChange={(e) => updateField("ageCategory", e.target.value)}
-                className="w-full p-3 border-2 border-[#4c6272] text-sm focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-0"
+                className="w-full p-3 border-2 border-nhs-grey-dark text-sm"
               >
                 <option>Child (0 to 17)</option>
                 <option>Adult (18 to 64)</option>
@@ -384,7 +347,7 @@ export const SymptomWizard = () => {
             <div>
               <label
                 htmlFor="duration"
-                className="block text-sm font-bold text-[#212b32] mb-1"
+                className="block text-sm font-bold text-nhs-black mb-1"
               >
                 How long have you had these symptoms?
               </label>
@@ -392,7 +355,7 @@ export const SymptomWizard = () => {
                 id="duration"
                 value={formData.duration}
                 onChange={(e) => updateField("duration", e.target.value)}
-                className="w-full p-3 border-2 border-[#4c6272] text-sm focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-0"
+                className="w-full p-3 border-2 border-nhs-grey-dark text-sm"
               >
                 <option>Less than 24 hours</option>
                 <option>1 to 3 days</option>
@@ -404,7 +367,7 @@ export const SymptomWizard = () => {
               <button
                 type="button"
                 onClick={handleNext}
-                className="px-6 py-2.5 bg-[#005eb8] text-white font-bold flex items-center gap-2 hover:bg-[#003087] text-sm focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+                className="px-6 py-2.5 bg-nhs-blue text-nhs-white font-bold flex items-center gap-2 hover:bg-nhs-dark-blue text-sm"
               >
                 <span>Continue</span>
                 <ArrowRight className="w-4 h-4" />
@@ -416,18 +379,18 @@ export const SymptomWizard = () => {
         {/* Step 2 */}
         {currentStep === 2 && (
           <fieldset className="space-y-6">
-            <legend className="text-xl font-bold text-[#212b32] mb-2">
+            <legend className="text-xl font-bold text-nhs-black mb-2">
               Describe your symptoms
             </legend>
 
             <div>
               <label
                 htmlFor="symptoms"
-                className="block text-sm font-bold text-[#212b32] mb-1"
+                className="block text-sm font-bold text-nhs-black mb-1"
               >
                 What's happening, and where?
               </label>
-              <p id="symptoms-hint" className="text-xs text-[#4c6272] mb-2">
+              <p id="symptoms-hint" className="text-xs text-nhs-grey-dark mb-2">
                 Describe what you're feeling, where it is, and how severe it is.
                 Do not include your name or contact details here — we already
                 have those on file.
@@ -440,7 +403,7 @@ export const SymptomWizard = () => {
                 value={formData.symptoms}
                 onChange={(e) => updateField("symptoms", e.target.value)}
                 placeholder="For example: sharp pain in lower right abdomen since yesterday, worse when I press on it..."
-                className="w-full p-3 border-2 border-[#4c6272] text-sm focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-0"
+                className="w-full p-3 border-2 border-nhs-grey-dark text-sm"
               />
             </div>
 
@@ -448,7 +411,7 @@ export const SymptomWizard = () => {
               <button
                 type="button"
                 onClick={handleBack}
-                className="px-5 py-2.5 border-2 border-[#212b32] text-[#212b32] font-bold flex items-center gap-2 text-sm focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+                className="px-5 py-2.5 border-2 border-nhs-black text-nhs-black font-bold flex items-center gap-2 text-sm"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span>Back</span>
@@ -457,7 +420,7 @@ export const SymptomWizard = () => {
                 type="button"
                 onClick={handleNext}
                 disabled={!formData.symptoms.trim()}
-                className="px-6 py-2.5 bg-[#005eb8] text-white font-bold flex items-center gap-2 hover:bg-[#003087] text-sm disabled:opacity-50 focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+                className="px-6 py-2.5 bg-nhs-blue text-nhs-white font-bold flex items-center gap-2 hover:bg-nhs-dark-blue text-sm disabled:opacity-50"
               >
                 <span>Continue</span>
                 <ArrowRight className="w-4 h-4" />
@@ -469,43 +432,43 @@ export const SymptomWizard = () => {
         {/* Step 3 */}
         {currentStep === 3 && (
           <form onSubmit={handleSubmit} className="space-y-6">
-            <h2 className="text-xl font-bold text-[#212b32]">
+            <h2 className="text-xl font-bold text-nhs-black">
               Check your answers
             </h2>
 
-            <dl className="bg-[#f0f4f5] border border-[#d8dde0] divide-y divide-[#d8dde0]">
+            <dl className="bg-nhs-grey-light border border-nhs-grey-mid divide-y divide-nhs-grey-mid">
               <div className="p-4">
-                <dt className="text-xs font-bold text-[#4c6272] uppercase">
+                <dt className="text-xs font-bold text-nhs-grey-dark uppercase">
                   Age bracket
                 </dt>
-                <dd className="text-sm text-[#212b32] mt-1">
+                <dd className="text-sm text-nhs-black mt-1">
                   {formData.ageCategory}
                 </dd>
               </div>
               <div className="p-4">
-                <dt className="text-xs font-bold text-[#4c6272] uppercase">
+                <dt className="text-xs font-bold text-nhs-grey-dark uppercase">
                   Duration
                 </dt>
-                <dd className="text-sm text-[#212b32] mt-1">
+                <dd className="text-sm text-nhs-black mt-1">
                   {formData.duration}
                 </dd>
               </div>
               <div className="p-4">
-                <dt className="text-xs font-bold text-[#4c6272] uppercase">
+                <dt className="text-xs font-bold text-nhs-grey-dark uppercase">
                   Reported symptoms
                 </dt>
-                <dd className="text-sm text-[#212b32] mt-1 whitespace-pre-wrap">
+                <dd className="text-sm text-nhs-black mt-1 whitespace-pre-wrap">
                   {formData.symptoms}
                 </dd>
               </div>
             </dl>
 
-            <label className="flex items-start gap-3 text-sm text-[#212b32]">
+            <label className="flex items-start gap-3 text-sm text-nhs-black">
               <input
                 type="checkbox"
                 checked={consentGiven}
                 onChange={(e) => setConsentGiven(e.target.checked)}
-                className="mt-1 w-4 h-4 focus:outline focus:outline-[3px] focus:outline-[#ffeb3b]"
+                className="mt-1 w-4 h-4"
               />
               <span>
                 I understand this is a triage prioritisation tool, not a
@@ -519,7 +482,7 @@ export const SymptomWizard = () => {
                 type="button"
                 onClick={handleBack}
                 disabled={submitting}
-                className="px-5 py-2.5 border-2 border-[#212b32] text-[#212b32] font-bold flex items-center gap-2 text-sm disabled:opacity-50 focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+                className="px-5 py-2.5 border-2 border-nhs-black text-nhs-black font-bold flex items-center gap-2 text-sm disabled:opacity-50"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span>Back</span>
@@ -527,7 +490,7 @@ export const SymptomWizard = () => {
               <button
                 type="submit"
                 disabled={submitting}
-                className="px-6 py-2.5 bg-[#007f3b] text-white font-bold flex items-center gap-2 hover:bg-[#00602c] text-sm transition disabled:opacity-50 focus:outline focus:outline-[3px] focus:outline-[#ffeb3b] focus:outline-offset-2"
+                className="px-6 py-2.5 bg-nhs-urgency-routine text-nhs-white font-bold flex items-center gap-2 hover:brightness-90 text-sm transition disabled:opacity-50"
               >
                 {submitting ? (
                   <>

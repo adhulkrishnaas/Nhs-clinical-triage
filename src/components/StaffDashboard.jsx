@@ -11,12 +11,18 @@ import { db, auth } from "../services/firebase";
 import { UrgencyBadge } from "./UrgencyBadge";
 import { FileText, X, ShieldAlert, CheckCircle, Clock } from "lucide-react";
 
+// Higher number = higher priority = sorts first
+const URGENCY_RANK = { EMERGENCY: 3, URGENT: 2, ROUTINE: 1, PENDING: 0 };
+
 const StaffDashboard = () => {
   const [queue, setQueue] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCase, setSelectedCase] = useState(null);
   const [clinicianNotes, setClinicianNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Reviewed cases are never deleted (audit trail / clinical safety record),
+  // just hidden from the active queue view by default.
+  const [showReviewed, setShowReviewed] = useState(false);
 
   // 1. Listen for real-time updates from the triage_queue collection
   useEffect(() => {
@@ -41,14 +47,14 @@ const StaffDashboard = () => {
       },
     );
 
-    // Clean up listener when component unmounts
     return () => unsubscribe();
   }, []);
 
-  // 2. Map database urgency strings to UrgencyBadge levels
-  const getBadgeLevel = (urgency = "", status = "") => {
-    if (status === "reviewed") return "PENDING";
-
+  // 2. Map database urgency strings to UrgencyBadge levels.
+  // This reflects the CLINICAL urgency only — review status is shown
+  // separately (see the status pill below) and must never override it.
+  // A reviewed emergency case is still an emergency case.
+  const getBadgeLevel = (urgency = "") => {
     const normalized = urgency.toUpperCase();
     if (normalized.includes("EMERGENCY")) return "EMERGENCY";
     if (normalized.includes("HIGH") || normalized.includes("URGENT"))
@@ -62,13 +68,32 @@ const StaffDashboard = () => {
     return "PENDING";
   };
 
-  // 3. Open the Review Modal for a selected case
+  // 3. Sort so the most urgent, still-pending cases always float to the top.
+  // Within the same urgency tier, oldest submission first (FIFO) so a case
+  // doesn't wait indefinitely just because newer same-tier cases keep arriving.
+  // Reviewed cases always sort to the bottom, regardless of urgency.
+  const visibleQueue = showReviewed
+    ? queue
+    : queue.filter((q) => q.status !== "reviewed");
+
+  const sortedQueue = [...visibleQueue].sort((a, b) => {
+    const aReviewed = a.status === "reviewed";
+    const bReviewed = b.status === "reviewed";
+    if (aReviewed !== bReviewed) return aReviewed ? 1 : -1;
+
+    const rankDiff =
+      URGENCY_RANK[getBadgeLevel(a.urgency)] -
+      URGENCY_RANK[getBadgeLevel(b.urgency)];
+    if (rankDiff !== 0) return -rankDiff; // higher rank first
+
+    return new Date(a.createdAt) - new Date(b.createdAt); // oldest first within tier
+  });
+
   const handleOpenReview = (item) => {
     setSelectedCase(item);
     setClinicianNotes(item.clinicianNotes || "");
   };
 
-  // 4. Save review decision back to Firestore
   const handleSaveReview = async (newStatus) => {
     if (!selectedCase) return;
     setSubmitting(true);
@@ -93,6 +118,9 @@ const StaffDashboard = () => {
   };
 
   const pendingCount = queue.filter((q) => q.status !== "reviewed").length;
+  const emergencyPendingCount = queue.filter(
+    (q) => q.status !== "reviewed" && getBadgeLevel(q.urgency) === "EMERGENCY",
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -100,36 +128,56 @@ const StaffDashboard = () => {
       <div className="flex items-center justify-between pb-4 border-b border-nhs-grey-mid">
         <div>
           <h1 className="text-2xl font-bold text-nhs-black">
-            Live Clinician Triage Queue
+            Live clinician triage queue
           </h1>
           <p className="text-sm text-nhs-grey-dark">
             Real-time patient symptom assessments
           </p>
         </div>
-        <span className="bg-red-100 text-red-800 font-bold px-3 py-1 rounded-full text-xs flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
-          Live Feed ({pendingCount} Pending)
-        </span>
+        <div className="flex items-center gap-2">
+          {emergencyPendingCount > 0 && (
+            <span className="bg-nhs-emergency-red text-nhs-white font-bold px-3 py-1 text-xs flex items-center gap-1.5">
+              <ShieldAlert className="w-3.5 h-3.5" />
+              {emergencyPendingCount} emergency
+            </span>
+          )}
+          <span className="bg-nhs-grey-light text-nhs-black font-bold px-3 py-1 text-xs flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-nhs-urgency-routine animate-pulse" />
+            Live feed ({pendingCount} pending)
+          </span>
+          <button
+            onClick={() => setShowReviewed((prev) => !prev)}
+            className="px-3 py-1 border-2 border-nhs-grey-mid text-nhs-black text-xs font-bold hover:border-nhs-blue"
+          >
+            {showReviewed ? "Hide reviewed" : "Show reviewed"}
+          </button>
+        </div>
       </div>
 
-      {/* Main Queue List */}
+      {/* Main Queue List — sorted by urgency, not just recency */}
       {loading ? (
         <div className="p-8 text-center text-nhs-grey-dark text-sm flex items-center justify-center gap-2">
           <Clock className="w-4 h-4 animate-spin text-nhs-blue" />
           <span>Connecting to live Firestore stream...</span>
         </div>
-      ) : queue.length === 0 ? (
-        <div className="p-8 text-center text-nhs-grey-dark bg-white rounded-lg border border-nhs-grey-mid">
+      ) : sortedQueue.length === 0 ? (
+        <div className="p-8 text-center text-nhs-grey-dark bg-nhs-white border border-nhs-grey-mid">
           No triage cases currently in queue.
         </div>
       ) : (
         <div className="grid gap-4">
-          {queue.map((item) => {
-            const badgeLevel = getBadgeLevel(item.urgency, item.status);
+          {sortedQueue.map((item) => {
+            const badgeLevel = getBadgeLevel(item.urgency);
+            const isEmergency =
+              badgeLevel === "EMERGENCY" && item.status !== "reviewed";
             return (
               <div
                 key={item.id}
-                className="p-4 bg-white rounded-lg shadow-sm border border-nhs-grey-mid flex items-center justify-between transition hover:shadow-md"
+                className={`p-4 bg-nhs-white border flex items-center justify-between transition hover:shadow-md ${
+                  isEmergency
+                    ? "border-nhs-emergency-red border-l-4"
+                    : "border-nhs-grey-mid"
+                }`}
               >
                 <div className="space-y-1.5 max-w-xl">
                   <div className="flex items-center gap-3">
@@ -137,15 +185,13 @@ const StaffDashboard = () => {
                       {item.patientName || "Anonymous Patient"}
                     </span>
 
-                    {/* Urgency Badge Component */}
                     <UrgencyBadge level={badgeLevel} />
 
-                    {/* Status Badge */}
                     <span
-                      className={`text-xs px-2 py-0.5 rounded font-semibold ${
+                      className={`text-xs px-2 py-0.5 font-semibold ${
                         item.status === "reviewed"
-                          ? "bg-gray-200 text-gray-700"
-                          : "bg-blue-50 text-nhs-blue"
+                          ? "bg-nhs-grey-mid text-nhs-grey-dark"
+                          : "bg-nhs-blue/10 text-nhs-blue"
                       }`}
                     >
                       {item.status ? item.status.toUpperCase() : "PENDING"}
@@ -158,20 +204,19 @@ const StaffDashboard = () => {
                   </p>
 
                   {item.ageCategory && (
-                    <span className="inline-block text-[11px] text-nhs-grey-dark bg-nhs-grey-light px-2 py-0.5 rounded">
+                    <span className="inline-block text-[11px] text-nhs-grey-dark bg-nhs-grey-light px-2 py-0.5">
                       {item.ageCategory} • {item.duration}
                     </span>
                   )}
                 </div>
 
-                {/* Review Action Button */}
                 <button
                   onClick={() => handleOpenReview(item)}
-                  className="px-4 py-2 bg-nhs-blue hover:bg-nhs-dark-blue text-white font-bold text-xs rounded transition flex items-center gap-1.5 flex-shrink-0"
+                  className="px-4 py-2 bg-nhs-blue hover:bg-nhs-dark-blue text-nhs-white font-bold text-xs transition flex items-center gap-1.5 flex-shrink-0"
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>
-                    {item.status === "reviewed" ? "View Review" : "Review Case"}
+                    {item.status === "reviewed" ? "View review" : "Review case"}
                   </span>
                 </button>
               </div>
@@ -182,35 +227,35 @@ const StaffDashboard = () => {
 
       {/* --- CLINICIAN REVIEW MODAL --- */}
       {selectedCase && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-xl w-full p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-nhs-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-nhs-white max-w-xl w-full p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-nhs-grey-mid">
               <div className="flex items-center gap-2">
                 <ShieldAlert className="w-5 h-5 text-nhs-blue" />
                 <h3 className="text-lg font-bold text-nhs-black">
-                  Triage Case Details
+                  Triage case details
                 </h3>
               </div>
               <button
                 onClick={() => setSelectedCase(null)}
-                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close"
+                className="text-nhs-grey-dark hover:text-nhs-black"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Case Summary */}
-            <div className="bg-nhs-grey-light p-3 rounded text-xs space-y-1">
+            <div className="bg-nhs-grey-light p-3 text-xs space-y-1">
               <p>
                 <strong>Patient:</strong> {selectedCase.patientName} (
                 {selectedCase.patientEmail})
               </p>
               <p>
-                <strong>Age Category:</strong>{" "}
+                <strong>Age category:</strong>{" "}
                 {selectedCase.ageCategory || "N/A"}
               </p>
               <p>
-                <strong>Symptom Duration:</strong>{" "}
+                <strong>Symptom duration:</strong>{" "}
                 {selectedCase.duration || "N/A"}
               </p>
               <p>
@@ -221,69 +266,66 @@ const StaffDashboard = () => {
               </p>
             </div>
 
-            {/* Urgency Badge inside Modal */}
             <div>
               <label className="block text-xs font-bold text-nhs-black mb-1">
-                Assessed Urgency Level
+                Assessed urgency level
               </label>
-              <UrgencyBadge
-                level={getBadgeLevel(selectedCase.urgency, selectedCase.status)}
-              />
+              <UrgencyBadge level={getBadgeLevel(selectedCase.urgency)} />
             </div>
 
-            {/* AI Assessment / Reason */}
             {selectedCase.aiAssessment && (
               <div>
                 <label className="block text-xs font-bold text-nhs-black mb-1">
-                  AI Clinical Reasoning
+                  AI clinical reasoning
                 </label>
-                <p className="text-xs bg-blue-50 p-2.5 rounded border border-blue-200 text-nhs-blue font-medium">
+                <p className="text-xs bg-nhs-blue/5 p-2.5 border border-nhs-blue/20 text-nhs-black font-medium">
                   {selectedCase.aiAssessment}
                 </p>
               </div>
             )}
 
-            {/* Patient Reported Symptoms */}
             <div>
               <label className="block text-xs font-bold text-nhs-black mb-1">
-                Reported Symptoms
+                Reported symptoms
               </label>
-              <p className="text-sm bg-gray-50 p-3 rounded border border-nhs-grey-mid text-nhs-grey-dark">
+              <p className="text-sm bg-nhs-grey-light p-3 border border-nhs-grey-mid text-nhs-grey-dark">
                 {selectedCase.symptomDetails ||
                   selectedCase.primarySymptom ||
                   "No detailed symptoms provided."}
               </p>
             </div>
 
-            {/* Clinician Notes Input */}
             <div>
-              <label className="block text-xs font-bold text-nhs-black mb-1">
-                Clinician Notes & Action Plan
+              <label
+                htmlFor="clinicianNotes"
+                className="block text-xs font-bold text-nhs-black mb-1"
+              >
+                Clinician notes & action plan
               </label>
               <textarea
+                id="clinicianNotes"
                 rows={3}
                 value={clinicianNotes}
                 onChange={(e) => setClinicianNotes(e.target.value)}
                 placeholder="Enter clinical review observations, prescriptions, or referral instructions..."
-                className="w-full p-2.5 border border-nhs-grey-mid rounded text-xs focus:border-nhs-blue"
+                className="w-full p-2.5 border-2 border-nhs-grey-mid text-xs focus:border-nhs-blue"
               />
             </div>
 
-            {/* Modal Actions */}
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-nhs-grey-mid">
               <button
                 onClick={() => setSelectedCase(null)}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded"
+                className="px-4 py-2 bg-nhs-grey-light hover:bg-nhs-grey-mid text-nhs-black text-xs font-bold"
               >
                 Cancel
               </button>
               <button
                 disabled={submitting}
                 onClick={() => handleSaveReview("reviewed")}
-                className="px-4 py-2 bg-green-700 hover:bg-green-800 text-white text-xs font-bold rounded flex items-center gap-1 disabled:opacity-50"
+                className="px-4 py-2 bg-nhs-urgency-routine hover:brightness-90 text-nhs-white text-xs font-bold flex items-center gap-1 disabled:opacity-50"
               >
                 <CheckCircle className="w-3.5 h-3.5" />
-                <span>{submitting ? "Saving..." : "Mark as Reviewed"}</span>
+                <span>{submitting ? "Saving..." : "Mark as reviewed"}</span>
               </button>
             </div>
           </div>
@@ -292,4 +334,5 @@ const StaffDashboard = () => {
     </div>
   );
 };
+
 export default StaffDashboard;

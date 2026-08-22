@@ -22,41 +22,65 @@ const Header = () => {
   };
 
   return (
-    <header className="bg-nhs-blue text-white shadow-md">
-      <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <Link
-            to="/"
-            className="bg-white text-nhs-blue font-extrabold text-2xl px-3 py-1 rounded tracking-tighter hover:opacity-90"
-          >
-            NHS
-          </Link>
-          <span className="text-lg md:text-xl font-bold tracking-tight hidden sm:inline">
-            Clinical Decision Support Portal
-          </span>
-        </div>
+    <>
+      {/* Skip link for keyboard/screen reader users - NHS.uk pattern */}
+      <a
+        href="#main-content"
+        className="sr-only focus-visible:not-sr-only focus-visible:absolute focus-visible:top-2 focus-visible:left-2 focus-visible:z-50 focus-visible:bg-nhs-white focus-visible:text-nhs-black focus-visible:px-4 focus-visible:py-2 focus-visible:font-bold"
+      >
+        Skip to main content
+      </a>
 
-        <nav className="flex items-center gap-2 md:gap-4 text-sm font-medium">
-          {currentUser ? (
-            <button
-              onClick={handleLogout}
-              className="px-3 py-1.5 bg-nhs-emergency-red hover:bg-nhs-emergency-dark-red text-white rounded flex items-center gap-1.5 transition text-xs font-bold"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Sign Out</span>
-            </button>
-          ) : (
-            <Link
-              to="/login"
-              className={`px-3 py-1.5 rounded flex items-center gap-1 transition ${location.pathname === "/login" ? "bg-nhs-dark-blue font-bold" : "hover:bg-nhs-dark-blue/50"}`}
-            >
-              <User className="w-3.5 h-3.5" />
-              <span>Sign In</span>
-            </Link>
-          )}
-        </nav>
+      <header className="bg-nhs-blue text-nhs-white">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+          {/* Organisation name / service name stack, NHS.uk pattern */}
+          <Link to="/" className="flex flex-col leading-tight hover:opacity-90">
+            <span className="text-xs font-medium tracking-wide text-nhs-grey-mid uppercase">
+              Clinical triage demo
+            </span>
+            <span className="text-lg md:text-xl font-bold tracking-tight">
+              CareFlow Triage
+            </span>
+          </Link>
+
+          <nav
+            aria-label="Account"
+            className="flex items-center gap-2 md:gap-4 text-sm font-medium"
+          >
+            {currentUser ? (
+              <button
+                onClick={handleLogout}
+                className="px-3 py-1.5 border-2 border-nhs-white text-nhs-white hover:bg-nhs-dark-blue flex items-center gap-1.5 transition text-xs font-bold"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign out</span>
+              </button>
+            ) : (
+              <Link
+                to="/login"
+                aria-current={
+                  location.pathname === "/login" ? "page" : undefined
+                }
+                className={`px-3 py-1.5 flex items-center gap-1 transition ${
+                  location.pathname === "/login"
+                    ? "bg-nhs-dark-blue font-bold"
+                    : "hover:bg-nhs-dark-blue/60"
+                }`}
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>Sign in</span>
+              </Link>
+            )}
+          </nav>
+        </div>
+      </header>
+      {/* Portfolio disclaimer strip - always visible, not dismissible */}
+      <div className="bg-nhs-black text-nhs-white text-xs text-center py-1 px-4">
+        Portfolio demo project. Not affiliated with, endorsed by, or connected
+        to the NHS.
       </div>
-    </header>
+    </>
   );
 };
+
 export default Header;

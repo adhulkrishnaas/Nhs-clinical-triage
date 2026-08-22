@@ -36,7 +36,7 @@
 }
 
 body {
-  @super-utility body-setup;
+  @apply body-setup;
 }
 
 /* High contrast focus rings for WCAG 2.2 AA Keyboard Navigation */
