@@ -1,8 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../services/firebase";
+import { auth } from "../services/firebase";
 import { Lock, LogIn, AlertCircle } from "lucide-react";
 
 const Login = () => {
@@ -18,26 +17,11 @@ const Login = () => {
     setError(null);
 
     try {
-      // 1. Authenticate credentials with Firebase
-      const userCredential = await signInWithEmailAndPassword(
-        auth,
-        email,
-        password,
-      );
-      const user = userCredential.user;
-
-      // 2. Fetch user profile from Firestore to determine role
-      const userDoc = await getDoc(doc(db, "users", user.uid));
-
-      if (userDoc.exists() && userDoc.data().role === "staff") {
-        navigate("/dashboard"); // Route staff to Clinician Queue
-      } else {
-        navigate("/"); // Route patients to Symptom Intake
-      }
+      await signInWithEmailAndPassword(auth, email, password);
+      navigate("/");
     } catch (err) {
       console.error("Login error:", err);
-      setError("Invalid credentials. Please check your email and password.");
-    } finally {
+      setError("Invalid email or password. Please try again.");
       setLoading(false);
     }
   };
