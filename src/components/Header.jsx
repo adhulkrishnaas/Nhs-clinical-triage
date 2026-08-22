@@ -37,20 +37,6 @@ const Header = () => {
         </div>
 
         <nav className="flex items-center gap-2 md:gap-4 text-sm font-medium">
-          <Link
-            to="/"
-            className={`px-3 py-1.5 rounded transition ${location.pathname === "/" ? "bg-nhs-dark-blue font-bold" : "hover:bg-nhs-dark-blue/50"}`}
-          >
-            Triage Intake
-          </Link>
-
-          <Link
-            to="/dashboard"
-            className={`px-3 py-1.5 rounded transition ${location.pathname === "/dashboard" ? "bg-nhs-dark-blue font-bold" : "hover:bg-nhs-dark-blue/50"}`}
-          >
-            Staff Dashboard
-          </Link>
-
           {currentUser ? (
             <button
               onClick={handleLogout}

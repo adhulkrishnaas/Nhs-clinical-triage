@@ -8,12 +8,12 @@ const SafetyBanner = () => {
       aria-live="assertive"
       className="bg-nhs-emergency-red text-white px-4 py-3 shadow-md border-b-2 border-nhs-emergency-darkRed"
     >
-      <div className="max-w-7xl mx-auto flex items-center gap-3">
+      <div className="max-w-7xl mx-auto flex justify-center gap-3">
         <AlertTriangle
           className="w-6 h-6 shrink-0 animate-pulse"
           aria-hidden="true"
         />
-        <p className="text-sm md:text-base font-bold">
+        <p className="text-sm md:text-base font-bold ">
           EMERGENCY NOTICE: If you have severe chest pain, major bleeding, or
           severe difficulty breathing, call 999 immediately.
         </p>
