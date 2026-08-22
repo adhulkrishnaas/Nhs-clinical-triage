@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../services/firebase";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../services/firebase";
 import { Lock, LogIn, AlertCircle } from "lucide-react";
 
 const Login = () => {
@@ -17,11 +18,30 @@ const Login = () => {
     setError(null);
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      navigate("/");
+      // 1. Authenticate user credentials
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        password,
+      );
+      const uid = userCredential.user.uid;
+
+      // 2. Fetch role from Firestore
+      const userDocRef = doc(db, "users", uid);
+      const userSnap = await getDoc(userDocRef);
+
+      const userRole = userSnap.exists() ? userSnap.data()?.role : "patient";
+
+      // 3. Dynamic redirection based on role
+      if (userRole === "staff") {
+        navigate("/dashboard");
+      } else {
+        navigate("/");
+      }
     } catch (err) {
       console.error("Login error:", err);
       setError("Invalid email or password. Please try again.");
+    } finally {
       setLoading(false);
     }
   };
@@ -90,4 +110,5 @@ const Login = () => {
     </div>
   );
 };
+
 export default Login;

@@ -1,22 +1,25 @@
 import React from "react";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import SafetyBanner from "./components/SafetyBanner";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import ProtectedRoute from "./components/ProtectedRoute";
 import Header from "./components/Header";
-import SymptomWizard from "./components/SymptomWizard";
-import StaffDashboard from "./components/StaffDashboard";
 import Login from "./components/Login";
 import Register from "./components/Register";
-import ProtectedRoute from "./components/ProtectedRoute";
+import SymptomWizard from "./components/SymptomWizard";
+import StaffDashboard from "./components/StaffDashboard";
+import SafetyBanner from "./components/SafetyBanner";
 
-export function App() {
+function App() {
   return (
-    <Router>
-      <div className="min-h-screen flex flex-col bg-nhs-grey-light">
+    <BrowserRouter>
+      <div className="min-h-screen bg-nhs-grey-light flex flex-col font-sans">
+        {/* Global NHS Header rendered on all pages */}
         <SafetyBanner />
         <Header />
-        <main className="flex-grow">
+
+        {/* Main Content Area */}
+        <main className="flex-1 container mx-auto px-4 py-6 max-w-5xl">
           <Routes>
-            {/* Public Patient Intake Route */}
+            {/* Patient Route - Default landing page for authenticated patients */}
             <Route
               path="/"
               element={
@@ -25,11 +28,8 @@ export function App() {
                 </ProtectedRoute>
               }
             />
-            {/* Auth Routes */}
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
 
-            {/* Protected Clinician Route - Staff Only */}
+            {/* Clinician Route - Strictly protected for staff role */}
             <Route
               path="/dashboard"
               element={
@@ -38,10 +38,14 @@ export function App() {
                 </ProtectedRoute>
               }
             />
+
+            {/* Shared Public Auth Routes */}
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
           </Routes>
         </main>
       </div>
-    </Router>
+    </BrowserRouter>
   );
 }
 
