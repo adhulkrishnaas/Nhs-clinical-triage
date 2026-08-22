@@ -10,7 +10,7 @@ const SafetyBanner = () => {
     >
       <div className="max-w-7xl mx-auto flex items-center gap-3">
         <AlertTriangle
-          className="w-6 h-6 flex-shrink-0 animate-pulse"
+          className="w-6 h-6 shrink-0 animate-pulse"
           aria-hidden="true"
         />
         <p className="text-sm md:text-base font-bold">
