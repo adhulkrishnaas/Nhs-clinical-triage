@@ -4,6 +4,9 @@ import SafetyBanner from "./components/SafetyBanner";
 import Header from "./components/Header";
 import SymptomWizard from "./components/SymptomWizard";
 import StaffDashboard from "./components/StaffDashboard";
+import Login from "./components/Login";
+import Register from "./components/Register";
+import ProtectedRoute from "./components/ProtectedRoute";
 
 export function App() {
   return (
@@ -11,12 +14,26 @@ export function App() {
       <div className="min-h-screen flex flex-col bg-nhs-grey-light">
         <SafetyBanner />
         <Header />
-        <div className="flex-grow">
+        <main className="flex-grow">
           <Routes>
+            {/* Public Patient Intake Route */}
             <Route path="/" element={<SymptomWizard />} />
-            <Route path="/dashboard" element={<StaffDashboard />} />
+
+            {/* Auth Routes */}
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+
+            {/* Protected Clinician Route - Staff Only */}
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute allowedRole="staff">
+                  <StaffDashboard />
+                </ProtectedRoute>
+              }
+            />
           </Routes>
-        </div>
+        </main>
       </div>
     </Router>
   );
