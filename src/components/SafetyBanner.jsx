@@ -1,7 +1,7 @@
 import React from "react";
 import { AlertTriangle } from "lucide-react";
 
-export const SafetyBanner = () => {
+const SafetyBanner = () => {
   return (
     <div
       role="alert"
@@ -21,3 +21,5 @@ export const SafetyBanner = () => {
     </div>
   );
 };
+
+export default SafetyBanner;
