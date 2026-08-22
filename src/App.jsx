@@ -17,8 +17,14 @@ export function App() {
         <main className="flex-grow">
           <Routes>
             {/* Public Patient Intake Route */}
-            <Route path="/" element={<SymptomWizard />} />
-
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <SymptomWizard />
+                </ProtectedRoute>
+              }
+            />
             {/* Auth Routes */}
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
