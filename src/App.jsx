@@ -11,38 +11,42 @@ import SafetyBanner from "./components/SafetyBanner";
 function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-nhs-grey-light flex flex-col font-sans">
-        {/* Global NHS Header rendered on all pages */}
+      <div className="min-h-screen w-full overflow-x-hidden bg-nhs-grey-light font-sans flex flex-col">
+        {/* Global safety banner */}
         <SafetyBanner />
+
+        {/* Global NHS-style header */}
         <Header />
 
-        {/* Main Content Area */}
-        <main className="flex-1 container mx-auto px-4 py-6 max-w-5xl">
-          <Routes>
-            {/* Patient Route - Default landing page for authenticated patients */}
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <SymptomWizard />
-                </ProtectedRoute>
-              }
-            />
+        {/* Main content area */}
+        <main id="main-content" className="flex-1 w-full min-w-0">
+          <div className="container mx-auto w-full max-w-5xl px-3 py-4 sm:px-4 sm:py-6">
+            <Routes>
+              {/* Patient Route */}
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <SymptomWizard />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Clinician Route - Strictly protected for staff role */}
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute allowedRole="staff">
-                  <StaffDashboard />
-                </ProtectedRoute>
-              }
-            />
+              {/* Clinician Route */}
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute allowedRole="staff">
+                    <StaffDashboard />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Shared Public Auth Routes */}
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-          </Routes>
+              {/* Authentication Routes */}
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+            </Routes>
+          </div>
         </main>
       </div>
     </BrowserRouter>
