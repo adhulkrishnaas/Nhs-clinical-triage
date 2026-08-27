@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 const RED_FLAG_PATTERNS = [
   /\bchest pain\b/i,
   /\b(can'?t breathe|difficulty breathing|shortness of breath|breathless)\b/i,
-  /\b(face (is )?droop|drooping face|slurred speech|can'?t speak)\b/i,
+  /\b(face (is )?droop|drooping face|slurred speech|speech is slurred|slurred speech|can'?t speak)\b/i,
   /\b(arm weakness|one side.*weak|numb(ness)? (down |on )?one side)\b/i,
   /\b(unconscious|unresponsive|passed out|not waking up)\b/i,
   /\b(severe bleeding|bleeding heavily|won'?t stop bleeding)\b/i,
